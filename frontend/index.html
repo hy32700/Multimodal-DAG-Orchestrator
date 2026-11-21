@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Multimodal-DAG Orchestrator v0.8 Workbench</title>
+  <style>
+    :root {
+      --bg: #0f172a; --panel: #1e293b; --border: #334155;
+      --text: #f8fafc; --muted: #94a3b8; --accent: #38bdf8;
+      --gold: #f59e0b; --green: #10b981; --red: #ef4444;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    header { display: flex; justify-content: space-between; align-items: center; padding: 14px 24px; background: var(--panel); border-bottom: 1px solid var(--border); }
+    .badge { padding: 3px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; background: #0284c7; }
+    .toolbar button { margin-left: 8px; padding: 7px 14px; border: none; border-radius: 6px; cursor: pointer; font-weight: 600; background: var(--accent); color: #0f172a; }
+    .toolbar button.warn { background: var(--gold); }
+    .toolbar button.ghost { background: #334155; color: var(--text); }
+    .grid { display: grid; grid-template-columns: 1.4fr 1fr; gap: 16px; padding: 20px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 16px; }
+    .node-item { border: 1px solid var(--border); border-radius: 8px; padding: 12px; margin-bottom: 10px; background: #0f172a; display: flex; justify-content: space-between; align-items: center; }
+    .node-item.critical { border-left: 4px solid var(--gold); }
+    .status-pill { font-size: 12px; padding: 2px 8px; border-radius: 999px; background: #334155; }
+    .status-completed { background: rgba(16,185,129,0.2); color: var(--green); }
+    .status-waiting_approval { background: rgba(245,158,11,0.25); color: var(--gold); }
+    .status-failed { background: rgba(239,68,68,0.2); color: var(--red); }
+    .waterfall-bar { height: 10px; border-radius: 4px; background: var(--accent); transition: width 0.3s; }
+    .waterfall-bar.cached { background: var(--green); }
+    dialog { background: var(--panel); color: var(--text); border: 1px solid var(--gold); border-radius: 10px; width: 520px; padding: 20px; }
+    textarea { width: 100%; height: 110px; background: #0f172a; color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin: 10px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <strong>Multimodal-DAG Orchestrator</strong> <span class="badge">v0.8</span>
+      <span id="budget-tag" style="margin-left:14px; font-size:13px; color:var(--muted);">已用预算: $0.0000 / $5.00</span>
+    </div>
+    <div class="toolbar">
+      <button onclick="launchDemo()">启动示例多模态 DAG</button>
+      <button class="warn" onclick="controlRun('pause')">全局暂停</button>
+      <button class="ghost" onclick="controlRun('resume')">继续执行</button>
+      <button class="ghost" onclick="downloadZip()">流式导出 ZIP</button>
+    </div>
+  </header>
+
+  <div class="grid">
+    <div class="card">
+      <h3 style="margin-top:0;">DAG 节点拓扑（金色边框 = 关键路径主干）</h3>
+      <div id="node-list"></div>
+    </div>
+    <div class="card">
+      <h3 style="margin-top:0;">Trace 耗时与语义缓存瀑布图</h3>
+      <div id="trace-list"></div>
+      <h4>实时事件流 (SSE 断点续接)</h4>
+      <pre id="event-console" style="height:220px; overflow:auto; background:#0f172a; padding:10px; border-radius:6px; font-size:12px;"></pre>
+    </div>
+  </div>
+
+  <dialog id="hitl-modal">
+    <h3 style="margin-top:0; color:var(--gold);">人工审批门禁 (HITL Gate)</h3>
+    <p id="hitl-desc" style="font-size:14px; color:var(--muted);"></p>
+    <textarea id="hitl-prompt"></textarea>
+    <div style="display:flex; justify-content:flex-end; gap:10px;">
+      <button onclick="submitApproval()" style="background:var(--green); color:#0f172a; border:none; padding:8px 16px; border-radius:6px; font-weight:600; cursor:pointer;">确认并放行</button>
+    </div>
+  </dialog>
+
+  <script>
+    let currentRunId = localStorage.getItem("v08_run_id") || "demo_run_v08";
+    let lastSeqId = Number(localStorage.getItem("v08_seq_" + currentRunId) || 0);
+    let pendingApprovalNode = null;
+    const nodeState = {};
+
+    const demoNodes = [
+      { node_id: "n1_arch", title: "总控架构与全局风格锚点", capability: "planning", prompt: "制定技术科普短视频的分镜与前端演示规范", deps: [], requires_human_approval: false },
+      { node_id: "n2_script", title: "科普口播文案生成", capability: "copywriting", prompt: "撰写 400 字高密度技术解析口播稿", deps: ["n1_arch"], requires_human_approval: true },
+      { node_id: "n2_ui", title: "交互式网页演示骨架", capability: "code", prompt: "生成单文件 HTML 交互动画演示组件", deps: ["n1_arch"], requires_human_approval: false },
+      { node_id: "n3_storyboard", title: "多模态分镜与音画对齐表", capability: "storyboard", prompt: "结合口播稿与网页组件生成逐秒分镜表", deps: ["n2_script", "n2_ui"], requires_human_approval: false }
+    ];
+
+    async function launchDemo() {
+      currentRunId = "run_" + Date.now();
+      lastSeqId = 0;
+      localStorage.setItem("v08_run_id", currentRunId);
+      const res = await fetch("/api/v1/pipeline/start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ run_id: currentRunId, max_budget_usd: 3.0, nodes: demoNodes })
+      });
+      const data = await res.json();
+      demoNodes.forEach(n => {
+        nodeState[n.node_id] = { ...n, status: "pending", weight: data.critical_weights[n.node_id] || 1, metrics: {} };
+      });
+      renderAll();
+      connectSSE();
+    }
+
+    function connectSSE() {
+      const es = new EventSource(`/api/v1/pipeline/${currentRunId}/stream?last_seq_id=${lastSeqId}`);
+      const logBox = document.getElementById("event-console");
+      const handler = (e) => {
+        const payload = JSON.parse(e.data);
+        lastSeqId = payload.seq_id;
+        localStorage.setItem("v08_seq_" + currentRunId, lastSeqId);
+        logBox.textContent += `[#${payload.seq_id}] ${payload.type}: ${JSON.stringify(payload.data)}
+`;
+        logBox.scrollTop = logBox.scrollHeight;
+
+        const d = payload.data;
+        if (d.node_id && nodeState[d.node_id]) {
+          if (payload.type === "node_started") nodeState[d.node_id].status = "running";
+          if (payload.type === "node_completed") {
+            nodeState[d.node_id].status = "completed";
+            nodeState[d.node_id].metrics = d.metrics || { cache_hit: d.cache_hit, duration_ms: 5 };
+            if (d.metrics?.spent_usd_cumulative !== undefined) {
+              document.getElementById("budget-tag").textContent = `已用预算: $${d.metrics.spent_usd_cumulative} / $3.00`;
+            }
+          }
+          if (payload.type === "node_failed") nodeState[d.node_id].status = "failed";
+          if (payload.type === "approval_required") {
+            nodeState[d.node_id].status = "waiting_approval";
+            pendingApprovalNode = d.node_id;
+            document.getElementById("hitl-desc").textContent = `节点 [${d.title}] 请求人工确认执行提示词：`;
+            document.getElementById("hitl-prompt").value = d.prompt;
+            document.getElementById("hitl-modal").showModal();
+          }
+        }
+        renderAll();
+      };
+      ["node_started", "node_completed", "node_failed", "approval_required", "budget_halted", "pipeline_finished"].forEach(t => es.addEventListener(t, handler));
+    }
+
+    async function submitApproval() {
+      if (!pendingApprovalNode) return;
+      const edited = document.getElementById("hitl-prompt").value;
+      await fetch(`/api/v1/pipeline/${currentRunId}/nodes/${pendingApprovalNode}/approve`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ edited_prompt: edited })
+      });
+      document.getElementById("hitl-modal").close();
+      pendingApprovalNode = null;
+    }
+
+    async function controlRun(action) {
+      await fetch(`/api/v1/pipeline/${currentRunId}/control/${action}`, { method: "POST" });
+    }
+
+    function downloadZip() {
+      window.open(`/api/v1/pipeline/${currentRunId}/export-zip`, "_blank");
+    }
+
+    function renderAll() {
+      const list = document.getElementById("node-list");
+      const traces = document.getElementById("trace-list");
+      list.innerHTML = "";
+      traces.innerHTML = "";
+      Object.values(nodeState).forEach(n => {
+        const isCritical = n.weight >= 2;
+        list.innerHTML += `
+          <div class="node-item ${isCritical ? "critical" : ""}">
+            <div>
+              <strong>${n.title}</strong> <small style="color:var(--muted)">(${n.node_id} · 权重 ${n.weight})</small>
+              <div style="font-size:12px; color:var(--muted); margin-top:4px;">能力: ${n.capability} | 依赖: ${n.deps.join(", ") || "无"}</div>
+            </div>
+            <span class="status-pill status-${n.status}">${n.status}</span>
+          </div>`;
+        const ms = n.metrics?.duration_ms || 0;
+        const pct = Math.min(100, Math.max(4, Math.round(ms / 50)));
+        traces.innerHTML += `
+          <div style="margin-bottom:10px; font-size:12px;">
+            <div style="display:flex; justify-content:space-between;">
+              <span>${n.node_id}</span>
+              <span>${n.metrics?.cache_hit ? "语义缓存命中 (0 Token)" : ms + " ms"}</span>
+            </div>
+            <div class="waterfall-bar ${n.metrics?.cache_hit ? "cached" : ""}" style="width:${pct}%"></div>
+          </div>`;
+      });
+    }
+  </script>
+</body>
+</html>

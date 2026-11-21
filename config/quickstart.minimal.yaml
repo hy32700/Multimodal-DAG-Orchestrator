@@ -1,0 +1,41 @@
+version: "0.8.0"
+project_name: "Multimodal-DAG Orchestrator v0.8"
+
+quick_start:
+  allow_partial_keys: true
+  auto_probe_on_boot: true
+  degrade_multimodal_to_spec: true
+
+providers:
+  primary_llm:
+    enabled: true
+    base_url: "${PRIMARY_BASE_URL:-https://api.deepseek.com/v1}"
+    api_key: "${PRIMARY_API_KEY}"
+    model: "${PRIMARY_MODEL:-deepseek-chat}"
+    capabilities: ["routing", "code", "copywriting", "planning"]
+    max_concurrency: 5
+
+  claude_node:
+    enabled: false
+    base_url: "${CLAUDE_BASE_URL}"
+    api_key: "${CLAUDE_API_KEY}"
+    model: "claude-3-7-sonnet-20250219"
+    capabilities: ["code", "planning"]
+    max_concurrency: 3
+
+  gemini_multimodal:
+    enabled: false
+    base_url: "${GEMINI_BASE_URL}"
+    api_key: "${GEMINI_API_KEY}"
+    model: "gemini-2.5-pro"
+    capabilities: ["multimodal", "storyboard", "planning"]
+    max_concurrency: 4
+
+routing:
+  fallback_chain:
+    routing: ["primary_llm"]
+    code: ["claude_node", "primary_llm"]
+    planning: ["claude_node", "gemini_multimodal", "primary_llm"]
+    multimodal: ["gemini_multimodal", "primary_llm"]
+    storyboard: ["gemini_multimodal", "primary_llm"]
+    copywriting: ["primary_llm"]

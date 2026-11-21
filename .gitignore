@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+workspaces/
+*.zip
+.pytest_cache/
+.venv/
+venv/
